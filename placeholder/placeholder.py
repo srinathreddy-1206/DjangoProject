@@ -7,6 +7,7 @@ import sys
 DEBUG = os.environ.get('DEBUG', 'on') == 'on'
 SECRET_KEY = os.environ.get('SECRET_KEY', '@$iuzgq4!fx66&hip6sx_j_#%-qjys0gh*-2(1z(rx@ekqd+$d'),
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost').split(',')
+BASE_DIR = os.path.dirname(__file__)
 settings.configure(
         DEBUG = DEBUG,
         SECRET_KEY = SECRET_KEY,
@@ -16,17 +17,37 @@ settings.configure(
             'django.middleware.csrf.CsrfViewMiddleware',
             'django.middleware.clickjacking.XFrameOptionsMiddleware',
         ),
+        INSTALLED_APPS = (
+            'django.contrib.staticfiles',
+        ),
+        TEMPLATE_DIRS = (
+            os.path.join(BASE_DIR, 'templates'),
+        ),
+        STATICFILES_DIRS = (
+            os.path.join(BASE_DIR, 'static'),
+        ),
+        STATIC_URL = '/static/',
     )
 
 
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.conf.urls import url
+from django.core.cache import cache
+from django.core.urlresolvers import reverse
 from django.core.wsgi import get_wsgi_application
+from django.shortcuts import render
 from django import forms
-
+from PIL import Image, ImageDraw
+from io import BytesIO
+from django.views.decorators.http import etag
+import hashlib
 
 def index(request):
-    return HttpResponse('Hello World')
+    example = reverse('placeholder',  kwargs = {'width':50,'height':50})
+    context = {
+            'example':request.build_absolute_uri(example)
+    }
+    return render(request, 'home.html', context)
 
 
 class ImageForm(forms.Form):
@@ -36,13 +57,37 @@ class ImageForm(forms.Form):
     height = forms.IntegerField(min_value =1, max_value = 2000)
     width = forms.IntegerField(min_value =1, max_value = 2000)
 
+    def generate(self, image_format='PNG'):
+        height = self.cleaned_data['height']
+        width = self.cleaned_data['width']
+        key = '{}.{}.{}'.format(width, height, image_format)
+        content = cache.get(key)
+        if content is None:
+            image = Image.new('RGB', (width, height))
+            draw = ImageDraw.Draw(image)
+            text = '{} x {}'.format(width, height)
+            text_width, text_height = draw.textsize(text)
+            if text_width < width and text_height < height:
+                text_top = (height -text_height)//2
+                text_left = (width - text_width)//2
+                draw.text((text_left, text_top), text, fill = (255, 255, 255))
+            content = BytesIO()
+            image.save(content, image_format)
+            content.seek(0)
+            cache.set(key, content, 60*60)
+        return content
+
+def generate_etag(request, width, height):
+    content = 'Placeholder: {0}x{1}'. format(width, height)
+    return hashlib.sha1(content.encode('utf-8')).hexdigest()
+
+@etag(generate_etag)
 def placeholder(request, width, height):
-    form = ImageForm(height=height, width=width)
+    form = ImageForm({'height':height, 'width':width})
     if form.is_valid():
-        height = form.cleaned_data['height']
-        width = form.cleaned_data['width']
         #TO-DO: Generate image of requested Size.
-        return HttpResponse('Ok')
+        image = form.generate()
+        return HttpResponse(image, content_type = 'image/png')
     else:
         return HttpResponseBadRequest('Invalid Image Request')
 
